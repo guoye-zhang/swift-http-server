@@ -21,13 +21,15 @@ import NIOHTTPTypes
 
 @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
 extension NIOHTTPServer {
-    func serveInsecureHTTP1_1WithTestChannel(
+    /// Starts serving with the Secure Upgrade transport using the provided testing channel instead of using
+    /// `ServerBootstrap` as `NIOHTTPServer` normally does.
+    func serveSecureUpgradeWithTestChannel(
         testChannel: NIOAsyncTestingChannel,
         handler: some HTTPServerRequestHandler<RequestConcludingReader, ResponseConcludingWriter>
     ) async throws {
         // The server requires a NIOAsyncChannel, so we create one from the test channel
-        let serverTestAsyncChannel = try await testChannel.eventLoop.submit {
-            try NIOAsyncChannel<NIOAsyncChannel<HTTPRequestPart, HTTPResponsePart>, Never>(
+        let testAsyncChannel = try await testChannel.eventLoop.submit {
+            try NIOAsyncChannel<EventLoopFuture<NIOHTTPServer.NegotiatedChannel>, Never>(
                 wrappingChannelSynchronously: testChannel,
                 configuration: .init()
             )
@@ -39,6 +41,6 @@ extension NIOHTTPServer {
         try self.addressBound(.init(ipAddress: "127.0.0.1", port: 8000))
         _ = try await self.listeningAddress
 
-        try await self.serveInsecureHTTP1_1(serverChannel: serverTestAsyncChannel, handler: handler)
+        try await self.serveSecureUpgrade(serverChannel: testAsyncChannel, handler: handler)
     }
 }
