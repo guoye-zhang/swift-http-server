@@ -39,7 +39,7 @@ public struct HTTPResponseConcludingAsyncWriter: ConcludingAsyncWriter, ~Copyabl
         public typealias WriteElement = UInt8
 
         /// The type of errors that can occur during writing operations.
-        public typealias WriteFailure = any Error
+        public typealias WriteFailure = Error
 
         /// The underlying NIO writer for HTTP response parts.
         private var writer: NIOAsyncChannelOutboundWriter<HTTPResponsePart>
@@ -57,16 +57,16 @@ public struct HTTPResponseConcludingAsyncWriter: ConcludingAsyncWriter, ~Copyabl
         /// - Throws: An error if the writing operation fails.
         public mutating func write<Result, Failure: Error>(
             _ body: nonisolated(nonsending) (inout OutputSpan<WriteElement>) async throws(Failure) -> Result
-        ) async throws(EitherError<WriteFailure, Failure>) -> Result {
+        ) async throws(EitherError<any WriteFailure, Failure>) -> Result {
             var buffer = RigidArray<WriteElement>.init(capacity: 1024)
 
             let result: Result
             do {
-                result = try await buffer.append(count: 1024) { span in
+                result = try await buffer.append(count: 1024) { (span) async throws(Failure) -> Result in
                     try await body(&span)
                 }
             } catch {
-                throw .first(error)
+                throw .second(error)
             }
 
             var byteBuffer = ByteBuffer()
@@ -75,11 +75,6 @@ public struct HTTPResponseConcludingAsyncWriter: ConcludingAsyncWriter, ~Copyabl
                 byteBuffer.writeInteger(buffer[index])
             }
 
-            //            buffer.span.withUnsafeBufferPointer { buffer in
-            //                <#code#>
-            //            }
-            //            var byteBuffer = ByteBuffer()
-
             do {
                 try await self.writer.write(.body(byteBuffer))
             } catch {
@@ -87,18 +82,6 @@ public struct HTTPResponseConcludingAsyncWriter: ConcludingAsyncWriter, ~Copyabl
             }
 
             return result
-
-            //            let pointer = buffer.withUnsafeMutableBufferPointer { $0 }
-            //            var span = OutputSpan<WriteElement>(
-            //                buffer: pointer,
-            //                initializedCount: 0
-            //            )
-            //            do {
-            //                let bodyResult = try await body(&span)
-            //
-            //            } catch {
-            //                throw .second(error)
-            //            }
         }
     }
 
