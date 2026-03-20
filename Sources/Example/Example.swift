@@ -38,24 +38,27 @@ struct Example {
         let privateKey = P256.Signing.PrivateKey()
         let server = NIOHTTPServer(
             logger: logger,
-            configuration: .init(
+            configuration: try .init(
                 bindTarget: .hostAndPort(host: "127.0.0.1", port: 12345),
+                supportedHTTPVersions: [.http1_1, .http2(config: .init())],
                 transportSecurity: .tls(
-                    certificateChain: [
-                        try Certificate(
-                            version: .v3,
-                            serialNumber: .init(bytes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
-                            publicKey: .init(privateKey.publicKey),
-                            notValidBefore: Date.now.addingTimeInterval(-60),
-                            notValidAfter: Date.now.addingTimeInterval(60 * 60),
-                            issuer: DistinguishedName(),
-                            subject: DistinguishedName(),
-                            signatureAlgorithm: .ecdsaWithSHA256,
-                            extensions: .init(),
-                            issuerPrivateKey: Certificate.PrivateKey(privateKey)
-                        )
-                    ],
-                    privateKey: Certificate.PrivateKey(privateKey)
+                    credentials: .inMemory(
+                        certificateChain: [
+                            try Certificate(
+                                version: .v3,
+                                serialNumber: .init(bytes: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                                publicKey: .init(privateKey.publicKey),
+                                notValidBefore: Date.now.addingTimeInterval(-60),
+                                notValidAfter: Date.now.addingTimeInterval(60 * 60),
+                                issuer: DistinguishedName(),
+                                subject: DistinguishedName(),
+                                signatureAlgorithm: .ecdsaWithSHA256,
+                                extensions: .init(),
+                                issuerPrivateKey: Certificate.PrivateKey(privateKey)
+                            )
+                        ],
+                        privateKey: Certificate.PrivateKey(privateKey)
+                    )
                 )
             )
         )
