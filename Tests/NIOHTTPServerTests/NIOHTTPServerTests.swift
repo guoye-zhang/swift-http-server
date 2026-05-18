@@ -59,7 +59,7 @@ struct NIOHTTPServerTests {
 
         // Now that the server has shut down, try obtaining the listening address. This should result in an error.
         await #expect(throws: ListeningAddressError.serverClosed) {
-            try await server.listeningAddress
+            try await server.listeningAddresses
         }
     }
 
@@ -568,6 +568,221 @@ struct NIOHTTPServerTests {
             }
         )
     }
+
+    @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
+    @Test("Bind to multiple addresses")
+    func testMultipleBindAddresses() async throws {
+        let server = NIOHTTPServer(
+            logger: Logger(label: "NIOHTTPServerTests"),
+            configuration: try .init(
+                bindTargets: [
+                    .hostAndPort(host: "127.0.0.1", port: 0),
+                    .hostAndPort(host: "127.0.0.1", port: 0),
+                ],
+                supportedHTTPVersions: [.http1_1],
+                transportSecurity: .plaintext
+            )
+        )
+
+        try await Self.withServer(
+            server: server,
+            serverHandler: HTTPServerClosureRequestHandler { _, _, _, _ in },
+            body: { (addresses: [NIOHTTPServer.SocketAddress]) in
+                #expect(addresses.count == 2)
+                #expect(addresses[0].port != addresses[1].port)
+            }
+        )
+    }
+
+    @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
+    @Test("Serve requests on multiple addresses independently")
+    func testServeOnMultipleAddresses() async throws {
+        let server = NIOHTTPServer(
+            logger: Logger(label: "NIOHTTPServerTests"),
+            configuration: try .init(
+                bindTargets: [
+                    .hostAndPort(host: "127.0.0.1", port: 0),
+                    .hostAndPort(host: "127.0.0.1", port: 0),
+                ],
+                supportedHTTPVersions: [.http1_1],
+                transportSecurity: .plaintext
+            )
+        )
+
+        try await Self.withServer(
+            server: server,
+            serverHandler: HTTPServerClosureRequestHandler { request, context, requestReader, responseSender in
+                try await Self.echoResponse(
+                    readUpTo: Self.bodyData.readableBytes,
+                    reader: requestReader,
+                    sender: responseSender
+                )
+            },
+            body: { (addresses: [NIOHTTPServer.SocketAddress]) in
+                #expect(addresses.count == 2)
+
+                // Send a request to the first address
+                let firstClient = try await ClientBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+                    .connectToTestHTTP1Server(at: addresses[0])
+
+                try await firstClient.executeThenClose { inbound, outbound in
+                    try await outbound.write(.head(.init(method: .post, scheme: "http", authority: "", path: "/")))
+                    try await outbound.write(Self.reqBody)
+                    try await outbound.write(Self.reqEnd)
+
+                    try await Self.validateResponse(
+                        inbound,
+                        expectedHead: [Self.responseHead(status: .ok, for: .http1_1)],
+                        expectedBody: [Self.bodyData],
+                        expectedTrailers: Self.trailer
+                    )
+                }
+
+                // Send a request to the second address
+                let secondClient = try await ClientBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+                    .connectToTestHTTP1Server(at: addresses[1])
+
+                try await secondClient.executeThenClose { inbound, outbound in
+                    try await outbound.write(.head(.init(method: .post, scheme: "http", authority: "", path: "/")))
+                    try await outbound.write(Self.reqBody)
+                    try await outbound.write(Self.reqEnd)
+
+                    try await Self.validateResponse(
+                        inbound,
+                        expectedHead: [Self.responseHead(status: .ok, for: .http1_1)],
+                        expectedBody: [Self.bodyData],
+                        expectedTrailers: Self.trailer
+                    )
+                }
+            }
+        )
+    }
+
+    /// Verifies the all-or-nothing listening semantics: when the server stops (e.g., due to cancellation),
+    /// all bound addresses become unavailable simultaneously and ``listeningAddresses`` throws
+    /// ``ListeningAddressError/serverClosed``. No subset of addresses continues serving after the server
+    /// has stopped.
+    @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
+    @Test("All addresses stop together and listeningAddresses throws after server stops")
+    func testAllAddressesStopTogether() async throws {
+        let server = NIOHTTPServer(
+            logger: Logger(label: "NIOHTTPServerTests"),
+            configuration: try .init(
+                bindTargets: [
+                    .hostAndPort(host: "127.0.0.1", port: 0),
+                    .hostAndPort(host: "127.0.0.1", port: 0),
+                ],
+                supportedHTTPVersions: [.http1_1],
+                transportSecurity: .plaintext
+            )
+        )
+
+        try await Self.withServer(
+            server: server,
+            serverHandler: HTTPServerClosureRequestHandler { request, context, requestReader, responseSender in
+                try await Self.echoResponse(
+                    readUpTo: Self.bodyData.readableBytes,
+                    reader: requestReader,
+                    sender: responseSender
+                )
+            },
+            body: { addresses in
+                #expect(addresses.count == 2)
+
+                // Verify both addresses are serving
+                for addr in addresses {
+                    let client = try await ClientBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+                        .connectToTestHTTP1Server(at: addr)
+                    try await client.executeThenClose { inbound, outbound in
+                        try await outbound.write(.head(.init(method: .post, scheme: "http", authority: "", path: "/")))
+                        try await outbound.write(Self.reqBody)
+                        try await outbound.write(Self.reqEnd)
+                        try await Self.validateResponse(
+                            inbound,
+                            expectedHead: [Self.responseHead(status: .ok, for: .http1_1)],
+                            expectedBody: [Self.bodyData],
+                            expectedTrailers: Self.trailer
+                        )
+                    }
+                }
+            }
+        )
+
+        // After the server has stopped, listeningAddresses must throw rather than returning stale addresses.
+        await #expect(throws: ListeningAddressError.serverClosed) {
+            try await server.listeningAddresses
+        }
+    }
+
+    @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
+    @Test("Empty bind targets throws error")
+    func testEmptyBindTargetsThrows() throws {
+        #expect(throws: NIOHTTPServerConfigurationError.noBindTargetsSpecified) {
+            try NIOHTTPServerConfiguration(
+                bindTargets: [],
+                supportedHTTPVersions: [.http1_1],
+                transportSecurity: .plaintext
+            )
+        }
+    }
+
+    /// Verifies that when a later bind target fails, any previously-bound listening channels are cleaned up
+    /// before the error propagates to the caller. Without cleanup, the already-bound sockets would leak and
+    /// keep their ports occupied even though the server never started serving.
+    ///
+    /// The test binds two targets. The second target is configured to fail by pointing at a port that's
+    /// already in use. We verify `serve` throws an `IOError` with `EADDRINUSE`, and that we can
+    /// immediately rebind to the first target's port — proving the first channel was closed before the
+    /// error propagated.
+    ///
+    /// We use a specific port for the first target (rather than `port: 0`) so we know what port to rebind
+    /// to for the verification. The port is below the typical ephemeral range used by `port: 0`
+    /// allocations on Linux (32768+) and macOS (49152+), so other tests using `port: 0` cannot
+    /// accidentally be assigned this port by the OS.
+    @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
+    @Test("Previously bound channels are closed when a later bind fails")
+    func testPreviouslyBoundChannelsAreClosedOnPartialBindFailure() async throws {
+        let firstPort = 30_210
+
+        // Hold a live listener on an ephemeral port. The server's second bind will conflict with this
+        // listener and fail with "address already in use".
+        let occupiedListener = try await ServerBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+            .bind(host: "127.0.0.1", port: 0) { channel in
+                channel.eventLoop.makeSucceededFuture(channel)
+            }
+        let occupiedPort = try #require(occupiedListener.channel.localAddress?.port)
+        defer { occupiedListener.channel.close(promise: nil) }
+
+        // Configure a server that binds to [firstPort, occupiedPort]. The first bind should succeed,
+        // the second should fail with "address already in use", causing cleanup of the first channel.
+        let server = NIOHTTPServer(
+            logger: Logger(label: "NIOHTTPServerTests"),
+            configuration: try .init(
+                bindTargets: [
+                    .hostAndPort(host: "127.0.0.1", port: firstPort),
+                    .hostAndPort(host: "127.0.0.1", port: occupiedPort),
+                ],
+                supportedHTTPVersions: [.http1_1],
+                transportSecurity: .plaintext
+            )
+        )
+
+        let error = await #expect(throws: IOError.self) {
+            try await server.serve(
+                handler: HTTPServerClosureRequestHandler { _, _, _, _ in }
+            )
+        }
+        #expect(error?.errnoCode == EADDRINUSE)
+
+        // If the first channel was properly closed, we should be able to bind to firstPort again.
+        // If it wasn't (i.e., the channel leaked), this bind will fail with "address already in use".
+        let rebindAttempt = try await ServerBootstrap(group: .singletonMultiThreadedEventLoopGroup)
+            .serverChannelOption(.socketOption(.so_reuseaddr), value: 1)
+            .bind(host: "127.0.0.1", port: firstPort) { channel in
+                channel.eventLoop.makeSucceededFuture(channel)
+            }
+        try await rebindAttempt.channel.close()
+    }
 }
 
 extension NIOHTTPServerTests {
@@ -693,8 +908,8 @@ extension NIOHTTPServerTests {
         return HTTPResponse(status: status, headerFields: headers)
     }
 
-    /// Starts `server` with `serverHandler`, waits for it to begin listening, runs `body` with the listening address,
-    /// then cancels the server task.
+    /// Starts `server` with `serverHandler`, waits for it to begin listening, runs `body` with the first
+    /// listening address, then cancels the server task.
     @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
     static func withServer(
         server: NIOHTTPServer,
@@ -704,18 +919,33 @@ extension NIOHTTPServerTests {
         >,
         body: (NIOHTTPServer.SocketAddress) async throws -> Void
     ) async throws {
+        try await self.withServer(server: server, serverHandler: serverHandler) {
+            (addresses: [NIOHTTPServer.SocketAddress]) in
+            let address = try #require(addresses.first)
+            try await body(address)
+        }
+    }
+
+    /// Starts `server` with `serverHandler`, waits for it to begin listening, runs `body` with all listening
+    /// addresses, then cancels the server task.
+    @available(macOS 26.2, iOS 26.2, watchOS 26.2, tvOS 26.2, visionOS 26.2, *)
+    static func withServer(
+        server: NIOHTTPServer,
+        serverHandler: some HTTPServerRequestHandler<
+            NIOHTTPServer.RequestConcludingReader,
+            NIOHTTPServer.ResponseConcludingWriter
+        >,
+        body: ([NIOHTTPServer.SocketAddress]) async throws -> Void
+    ) async throws {
         try await withThrowingTaskGroup { group in
-            // Add the server task to the group
             group.addTask {
                 try await server.serve(handler: serverHandler)
             }
 
-            // Wait for the server to start listening before running the body closure
-            let listeningAddress = try await server.listeningAddress
+            let listeningAddresses = try await server.listeningAddresses
 
-            try await body(listeningAddress)
+            try await body(listeningAddresses)
 
-            // Shut the server down
             group.cancelAll()
         }
     }
