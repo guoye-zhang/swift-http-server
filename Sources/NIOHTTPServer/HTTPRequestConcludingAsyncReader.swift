@@ -13,6 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 public import AsyncStreaming
+public import BasicContainers
+public import HTTPAPIs
 public import HTTPTypes
 import NIOCore
 import NIOHTTPTypes
@@ -38,93 +40,19 @@ public struct HTTPRequestConcludingAsyncReader: ConcludingAsyncReader, ~Copyable
         /// The type of errors that can occur during reading operations.
         public typealias ReadFailure = any Error
 
+        /// The buffer type used to hand elements to the caller.
+        public typealias Buffer = UniqueArray<UInt8>
+
         /// The HTTP trailer fields captured at the end of the request.
         fileprivate var state: ReaderState
 
-        struct RequestBodyStateMachine {
-            enum State {
-                // The request body is currently being read: expecting more request body parts or a request end part.
-                case readingBody(ReadingBodyState)
+        /// The iterator that provides HTTP request parts from the underlying channel.
+        private var iterator: NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator
 
-                // The request end part was received. We have finished.
-                case finished
-
-                enum ReadingBodyState {
-                    // All received bytes have been consumed; no excess bytes need to be stored.
-                    case noExcess
-
-                    // `read` was called with a `maximumCount` value that was lower than the bytes available. The excess
-                    // bytes are stored here so they can be dispensed in future calls to `read`.
-                    case excess(ByteBuffer)
-                }
-            }
-
-            private var state: State
-
-            /// The iterator that provides HTTP request parts from the underlying channel.
-            private var iterator: NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator
-
-            init(iterator: NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator) {
-                self.state = .readingBody(.noExcess)
-                self.iterator = iterator
-            }
-
-            enum ReadResult {
-                case readBody(ByteBuffer)
-                case readEnd(HTTPFields?)
-                case streamFinished
-            }
-
-            mutating func read(limit: Int?) async throws -> ReadResult {
-                switch self.state {
-                case .readingBody(let readingBodyState):
-                    var bodyElement: ByteBuffer
-
-                    switch readingBodyState {
-                    case .excess(let excessElement):
-                        // There was an excess of bytes from the previous call to `read`. We read directly from this
-                        // excess and don't advance the iterator.
-                        bodyElement = excessElement
-
-                    case .noExcess:
-                        // There is no excess from previous reads. We obtain the next element from the stream.
-                        let requestPart = try await self.iterator.next(isolation: #isolation)
-
-                        switch requestPart {
-                        case .head:
-                            fatalError("Unexpectedly received a request head.")
-
-                        case .none:
-                            throw RequestBodyReadError.streamEndedBeforeReceivingRequestEnd
-
-                        case .body(let element):
-                            bodyElement = element
-
-                        case .end(let trailers):
-                            self.state = .finished
-                            return .readEnd(trailers)
-                        }
-                    }
-
-                    if let limit, limit < bodyElement.readableBytes,
-                        let truncated = bodyElement.readSlice(length: limit)
-                    {
-                        // There are more bytes available than `limit`. We must store the excess in a buffer for it to
-                        // be consumed in the next call to `read`.
-                        self.state = .readingBody(.excess(bodyElement))
-                        return .readBody(truncated)
-                    }
-
-                    self.state = .readingBody(.noExcess)
-                    return .readBody(bodyElement)
-
-                case .finished:
-                    return .streamFinished
-                }
-            }
-        }
-
-        var requestBodyStateMachine: RequestBodyStateMachine
+        /// A reusable buffer handed to the body closure on each call to ``read(body:)``.
+        /// Reusing it across calls preserves the allocation; the buffer is cleared
+        /// (while keeping its capacity) at the start of every read.
+        private var buffer: UniqueArray<UInt8>
 
         /// Initializes a new request body reader with the given NIO async channel iterator.
         ///
@@ -133,42 +61,40 @@ public struct HTTPRequestConcludingAsyncReader: ConcludingAsyncReader, ~Copyable
             iterator: consuming sending NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator,
             readerState: ReaderState
         ) {
-            self.requestBodyStateMachine = .init(iterator: iterator)
+            self.iterator = iterator
             self.state = readerState
+            self.buffer = UniqueArray<UInt8>()
         }
 
         /// Reads a chunk of request body data.
-        ///
-        /// - Parameter body: A function that consumes the read element (or nil for end of stream)
-        ///                  and returns a value of type `Return`.
-        /// - Returns: The value returned by the body function after processing the read element.
-        /// - Throws: An error if the reading operation fails.
-        public mutating func read<Return, Failure: Error>(
-            maximumCount: Int?,
-            body: nonisolated(nonsending) (consuming Span<ReadElement>) async throws(Failure) -> Return
+        public mutating func read<Return: ~Copyable, Failure: Error>(
+            body: nonisolated(nonsending) (inout Buffer) async throws(Failure) -> Return
         ) async throws(EitherError<ReadFailure, Failure>) -> Return {
-            let readResult: RequestBodyStateMachine.ReadResult
+            let requestPart: HTTPRequestPart?
             do {
-                readResult = try await self.requestBodyStateMachine.read(limit: maximumCount)
+                requestPart = try await self.iterator.next(isolation: #isolation)
             } catch {
                 throw .first(error)
             }
 
-            do {
-                switch readResult {
-                case .readBody(let readElement):
-                    return try await body(Array(buffer: readElement).span)
-
-                case .readEnd(let trailers):
-                    self.state.wrapped.withLock { state in
-                        state.trailers = trailers
-                        state.finishedReading = true
-                    }
-                    return try await body(.init())
-
-                case .streamFinished:
-                    return try await body(.init())
+            self.buffer.removeAll(keepingCapacity: true)
+            switch requestPart {
+            case .head:
+                fatalError()
+            case .body(let element):
+                self.buffer.reserveCapacity(element.readableBytes)
+                self.buffer.append(copying: element.readableBytesUInt8Span)
+            case .end(let trailers):
+                self.state.wrapped.withLock { state in
+                    state.trailers = trailers
+                    state.finishedReading = true
                 }
+            case .none:
+                throw .first(RequestBodyReadError.streamEndedBeforeReceivingRequestEnd)
+            }
+
+            do {
+                return try await body(&self.buffer)
             } catch {
                 throw .second(error)
             }
@@ -208,7 +134,7 @@ public struct HTTPRequestConcludingAsyncReader: ConcludingAsyncReader, ~Copyable
         iterator: consuming sending NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator,
         readerState: ReaderState
     ) {
-        self.iterator = Disconnected(value: iterator)
+        self.iterator = .init(value: iterator)
         self.state = readerState
     }
 
