@@ -37,8 +37,7 @@ struct HTTPRequestConcludingAsyncReaderTests {
             source.finish()
 
             let requestReader = HTTPRequestConcludingAsyncReader(
-                iterator: stream.makeAsyncIterator(),
-                readerState: .init()
+                readerState: .init(iterator: stream.makeAsyncIterator())
             )
 
             _ = try await requestReader.consumeAndConclude { bodyReader in
@@ -59,8 +58,7 @@ struct HTTPRequestConcludingAsyncReaderTests {
             source.finish()
 
             let requestReader = HTTPRequestConcludingAsyncReader(
-                iterator: stream.makeAsyncIterator(),
-                readerState: .init()
+                readerState: .init(iterator: stream.makeAsyncIterator())
             )
 
             _ = try await requestReader.consumeAndConclude { bodyReader in
@@ -91,7 +89,7 @@ struct HTTPRequestConcludingAsyncReaderTests {
         source.finish()
 
         // Then start reading the request
-        let requestReader = HTTPRequestConcludingAsyncReader(iterator: stream.makeAsyncIterator(), readerState: .init())
+        let requestReader = HTTPRequestConcludingAsyncReader(readerState: .init(iterator: stream.makeAsyncIterator()))
         let (requestBody, finalElement) = try await requestReader.consumeAndConclude { bodyReader in
             var bodyReader = bodyReader
 
@@ -140,8 +138,7 @@ struct HTTPRequestConcludingAsyncReaderTests {
 
             group.addTask {
                 let requestReader = HTTPRequestConcludingAsyncReader(
-                    iterator: stream.makeAsyncIterator(),
-                    readerState: .init()
+                    readerState: .init(iterator: stream.makeAsyncIterator())
                 )
                 let (_, finalElement) = try await requestReader.consumeAndConclude { bodyReader in
                     // Read all body chunks
@@ -173,8 +170,7 @@ struct HTTPRequestConcludingAsyncReaderTests {
         source.finish()
 
         let requestReader = HTTPRequestConcludingAsyncReader(
-            iterator: stream.makeAsyncIterator(),
-            readerState: .init()
+            readerState: .init(iterator: stream.makeAsyncIterator())
         )
 
         _ = await requestReader.consumeAndConclude { bodyReader in
@@ -203,8 +199,7 @@ struct HTTPRequestConcludingAsyncReaderTests {
         source.finish()
 
         let requestReader = HTTPRequestConcludingAsyncReader(
-            iterator: stream.makeAsyncIterator(),
-            readerState: .init()
+            readerState: .init(iterator: stream.makeAsyncIterator())
         )
 
         _ = await requestReader.consumeAndConclude { requestBodyReader in

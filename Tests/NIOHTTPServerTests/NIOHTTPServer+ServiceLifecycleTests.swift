@@ -61,7 +61,10 @@ struct NIOHTTPServiceLifecycleTests {
 
                     firstChunkReadPromise.succeed()
 
-                    try await bodyReader.read { _ in }
+                    var requestFinished = false
+                    while !requestFinished {
+                        try await bodyReader.read { if $0.isEmpty { requestFinished = true } }
+                    }
                 }
 
                 let responseBodyWriter = try await responseSender.send(.init(status: .ok))
@@ -183,6 +186,13 @@ struct NIOHTTPServiceLifecycleTests {
                     group.cancelAll()
                     // Wait for the server to shut down.
                     try await group.waitForAll()
+
+                    // Wait for the client channel to be fully closed. The server has closed
+                    // its side of the connection, but the client's event loop may not have
+                    // processed the TCP FIN/RST yet. closeFuture completes only once the
+                    // channel is fully inactive, which is a stronger guarantee than just
+                    // draining inbound (which may return while the channel is half-closed).
+                    try await client.channel.closeFuture.get()
 
                     // We shouldn't be able to complete our request; the server should have shut down.
                     await #expect(throws: ChannelError.ioOnClosedChannel) {
