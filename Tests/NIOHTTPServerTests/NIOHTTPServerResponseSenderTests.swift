@@ -46,12 +46,12 @@ struct NIOHTTPServerResponseSenderTests {
         try await sender.sendInformational(secondInfoHead)
 
         // Then send the final response
-        let finalResponseHead = HTTPResponse(status: .ok, headerFields: [:])
+        let finalResponseHead = HTTPResponse(status: .ok)
         let finalResponseBody = [UInt8]([1, 2])
         let finalResponseTrailer: HTTPFields = [.cookie: "cookie"]
 
         var buffer = UniqueArray(copying: finalResponseBody)
-        try await sender.sendAndFinish(.init(status: .ok), buffer: &buffer, trailer: finalResponseTrailer)
+        try await sender.sendAndFinish(finalResponseHead, buffer: &buffer, trailer: finalResponseTrailer)
 
         var responseIterator = sink.makeAsyncIterator()
         let firstHead = try #require(await responseIterator.next())

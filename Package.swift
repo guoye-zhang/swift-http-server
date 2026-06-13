@@ -71,11 +71,9 @@ let package = Package(
         .executableTarget(
             name: "Example",
             dependencies: [
-                .product(name: "HTTPTypes", package: "swift-http-types"),
                 .product(name: "Tracing", package: "swift-distributed-tracing"),
                 .product(name: "Instrumentation", package: "swift-distributed-tracing"),
                 .product(name: "Logging", package: "swift-log"),
-                .product(name: "HTTPAPIs", package: "swift-http-api-proposal"),
                 "NIOHTTPServer",
             ],
             swiftSettings: extraSettings

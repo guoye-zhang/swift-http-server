@@ -33,7 +33,6 @@ struct Example {
         var logger = Logger(label: "Logger")
         logger.logLevel = .trace
 
-        // Using the new extension method that doesn't require type hints
         let privateKey = P256.Signing.PrivateKey()
         let server = NIOHTTPServer(
             logger: logger,
@@ -63,7 +62,7 @@ struct Example {
         )
 
         try await server.serve { request, requestContext, requestBodyAndTrailers, responseSender in
-            var body = UniqueArray<UInt8>.init(copying: "Hello World".utf8)
+            var body = UniqueArray<UInt8>(copying: "Well, hello!".utf8)
             try await responseSender.sendAndFinish(HTTPResponse(status: .ok), buffer: &body)
         }
     }

@@ -33,7 +33,7 @@ import X509
 
 /// A generic HTTP server that can handle incoming HTTP requests.
 ///
-/// The `Server` class provides a high-level interface for creating HTTP servers with support for:
+/// `NIOHTTPServer` provides a high-level interface for creating HTTP servers with support for:
 /// - TLS/SSL encryption
 /// - Custom request handlers
 /// - Configurable binding targets
@@ -44,39 +44,21 @@ import X509
 /// ## Usage
 ///
 /// ```swift
-/// let configuration = NIOHTTPServerConfiguration(
-///     bindTarget: .hostAndPort(host: "localhost", port: 8080),
-///     tlsConfiguration: .insecure()
+/// let server = NIOHTTPServer(
+///     logger: logger,
+///     configuration: try .init(
+///         bindTarget: .hostAndPort(host: "localhost", port: 8080),
+///         supportedHTTPVersions: [.http1_1],
+///         transportSecurity: .plaintext
+///     )
 /// )
 ///
-/// try await Server.serve(
-///     logger: logger,
-///     configuration: configuration
-/// ) { request, bodyReader, sendResponse in
-///     // Read the entire request body
-///     let (bodyData, trailers) = try await bodyReader.consumeAndConclude { reader in
-///         var data = [UInt8]()
-///         var shouldContinue = true
-///         while shouldContinue {
-///             try await reader.read { span in
-///                 guard let span else {
-///                     shouldContinue = false
-///                     return
-///                 }
-///                 data.append(contentsOf: span)
-///             }
-///         }
-///         return data
-///     }
-///
-///     // Create and send response
-///     var response = HTTPResponse(status: .ok)
-///     response.headerFields[.contentType] = "text/plain"
-///     let responseWriter = try await sendResponse(response)
-///     try await responseWriter.produceAndConclude { writer in
-///         try await writer.write("Hello, World!".utf8CString.dropLast().span)
-///         return ((), nil)
-///     }
+/// try await server.serve { request, requestContext, reader, responseSender in
+///     var body = UniqueArray<UInt8>(copying: "Hello, World!".utf8)
+///     try await responseSender.sendAndFinish(
+///         HTTPResponse(status: .ok, headerFields: [.contentType: "text/plain"]),
+///         buffer: &body
+///     )
 /// }
 /// ```
 @available(anyAppleOS 26.0, *)
