@@ -12,8 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-public import HTTPAPIs
-import HTTPTypes
+@_exported public import HTTPAPIs
 public import Logging
 import NIOCertificateReloading
 import NIOConcurrencyHelpers
@@ -82,8 +81,7 @@ import X509
 /// ```
 @available(anyAppleOS 26.0, *)
 public struct NIOHTTPServer: HTTPServer {
-    public typealias RequestConcludingReader = HTTPRequestConcludingAsyncReader
-    public typealias ResponseConcludingWriter = HTTPResponseConcludingAsyncWriter
+    public struct RequestContext: HTTPServerCapability.RequestContext, Sendable {}
 
     let logger: Logger
     let configuration: NIOHTTPServerConfiguration
@@ -150,9 +148,15 @@ public struct NIOHTTPServer: HTTPServer {
     ///
     /// try await server.serve(handler: MyHandler())
     /// ```
-    public func serve(
-        handler: some HTTPServerRequestHandler<RequestConcludingReader, ResponseConcludingWriter>
-    ) async throws {
+    public func serve<Handler: HTTPServerRequestHandler>(handler: Handler) async throws
+    where
+        Handler.RequestContext: ~Copyable,
+        Handler.RequestContext == RequestContext,
+        Handler.Reader == Reader,
+        Handler.Reader: ~Copyable,
+        Handler.ResponseSender == ResponseSender,
+        Handler.ResponseSender: ~Copyable
+    {
         // Ensure the listening address promise is always completed on the way out, regardless of whether
         // binding succeeded, the serve loop returned normally, or an error propagated.
         defer { self.finishListeningAddressPromise() }
@@ -194,10 +198,18 @@ public struct NIOHTTPServer: HTTPServer {
         }
     }
 
-    private func _serve(
+    private func _serve<Handler: HTTPServerRequestHandler>(
         serverChannels: [ServerChannel],
-        handler: some HTTPServerRequestHandler<RequestConcludingReader, ResponseConcludingWriter>
-    ) async throws {
+        handler: Handler
+    ) async throws
+    where
+        Handler.RequestContext: ~Copyable,
+        Handler.RequestContext == RequestContext,
+        Handler.Reader == Reader,
+        Handler.Reader: ~Copyable,
+        Handler.ResponseSender == ResponseSender,
+        Handler.ResponseSender: ~Copyable
+    {
         try await withThrowingTaskGroup(of: Void.self) { group in
             for serverChannel in serverChannels {
                 group.addTask {
@@ -247,31 +259,31 @@ public struct NIOHTTPServer: HTTPServer {
     /// Shared core: invokes the request handler with the appropriate reader/writer state.
     /// Returns the recovered iterator if the request was fully consumed (for HTTP/1.1 reuse),
     /// or `nil` if the request could not be fully consumed.
-    func invokeHandler(
+    func invokeHandler<Handler: HTTPServerRequestHandler>(
         request: HTTPRequest,
         iterator: consuming sending NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator,
         outbound: NIOAsyncChannelOutboundWriter<HTTPResponsePart>,
-        handler: some HTTPServerRequestHandler<RequestConcludingReader, ResponseConcludingWriter>
-    ) async throws -> NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator? {
-        let readerState = HTTPRequestConcludingAsyncReader.ReaderState(iterator: iterator)
-        let writerState = HTTPResponseConcludingAsyncWriter.WriterState()
+        handler: Handler
+    ) async throws -> NIOAsyncChannelInboundStream<HTTPRequestPart>.AsyncIterator?
+    where
+        Handler.RequestContext: ~Copyable,
+        Handler.RequestContext == RequestContext,
+        Handler.Reader == Reader,
+        Handler.Reader: ~Copyable,
+        Handler.ResponseSender == ResponseSender,
+        Handler.ResponseSender: ~Copyable
+    {
+        let readerState = Reader.ReaderState(iterator: iterator)
+        let writerState = ResponseSender.WriterState()
 
         do {
             try await handler.handle(
                 request: request,
-                requestContext: HTTPRequestContext(),
-                requestBodyAndTrailers: HTTPRequestConcludingAsyncReader(
+                requestContext: RequestContext(),
+                reader: Reader(
                     readerState: readerState
                 ),
-                responseSender: HTTPResponseSender { response in
-                    try await outbound.write(.head(response))
-                    return HTTPResponseConcludingAsyncWriter(
-                        writer: outbound,
-                        writerState: writerState
-                    )
-                } sendInformational: { response in
-                    try await outbound.write(.head(response))
-                }
+                responseSender: ResponseSender(writer: outbound, writerState: writerState)
             )
         } catch {
             logger.error("Error thrown while handling request: \(error)")
