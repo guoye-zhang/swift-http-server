@@ -173,6 +173,20 @@ extension NIOHTTPServer {
                     metadata: ["error": "\(error)"]
                 )
             }
+
+            // The `multiplexer.inbound` iteration exits when our task is cancelled, or when the HTTP/2 stream
+            // multiplexer finishes or throws. In any case, we are done with this connection here, so tear it down.
+            do {
+                try await connectionChannel.close()
+            } catch ChannelError.alreadyClosed {
+                // We swallow the error here because the connection channel may already have closed at this point, e.g.
+                // if the client sent a TCP FIN or a TLS CLOSE_NOTIFY that the event loop processed before we got here.
+            } catch {
+                self.logger.error(
+                    "Error thrown while closing the HTTP/2 connection channel",
+                    metadata: ["error": "\(error)"]
+                )
+            }
         }
     }
 
